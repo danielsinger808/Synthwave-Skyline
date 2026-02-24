@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synthwave Skyline</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #0a0010;
+    }
+    #c {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+    #overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10, 0, 16, 0.85);
+      z-index: 10;
+    }
+    #startBtn {
+      font-size: 1.6rem;
+      font-family: 'Courier New', Courier, monospace;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: #00ffff;
+      background: #0a0010;
+      border: 2px solid #ff00ff;
+      padding: 1rem 2.5rem;
+      cursor: pointer;
+      box-shadow: 0 0 20px #ff00ff, 0 0 40px #ff00ff55;
+      transition: box-shadow 0.2s;
+    }
+    #startBtn:hover {
+      box-shadow: 0 0 30px #ff00ff, 0 0 60px #ff00ffaa, 0 0 80px #00ffff44;
+    }
+    #errMsg {
+      margin-top: 1rem;
+      color: #ff4444;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 1rem;
+    }
+    #protocolNote {
+      margin-top: 1.2rem;
+      color: #aaa;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.75rem;
+      text-align: center;
+      max-width: 480px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="overlay">
+    <button id="startBtn">CLICK TO START</button>
+    <p id="errMsg"></p>
+    <p id="protocolNote">Note: Open via http://localhost or https:// &mdash; file:// URLs block microphone access in Chrome/Edge.</p>
+  </div>
+  <script>
+    // ---- Constants ----
+    const FFT_SIZE = 2048;
+    const LERP = 0.15;
+
+    const BAND_SUB_BASS  = [0,   4];
+    const BAND_BASS      = [5,   15];
+    const BAND_LOW_MIDS  = [16,  40];
+    const BAND_MIDS      = [41,  100];
+    const BAND_HIGHS     = [101, 200];
+
+    const COLOR_REAR = '#9900ff';
+    const COLOR_MID  = '#ff00ff';
+    const COLOR_FG   = '#00ffff';
+
+    const HORIZON_RATIO = 0.75;
+    const BG_COLOR = '#0a0010';
+
+    // ---- Utility ----
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function bandAverage(dataArray, start, end) {
+      let sum = 0;
+      const count = end - start + 1;
+      for (let i = start; i <= end; i++) {
+        sum += dataArray[i];
+      }
+      return (sum / count) / 255;
+    }
+
+    // ---- Building Generation ----
+    function generateBuildings(canvasW, canvasH, layer) {
+      const { count, minW, maxW, minH, maxH, hasAntennas,
+              minBin, maxBin, minLerp, maxLerp, minReact, maxReact,
+              spreadFull = false, edgePad = 20, clusterGaps = false } = layer;
+      const buildings = [];
+      let x = 0;
+
+      const binRange = maxBin - minBin;
+      const binStep  = count > 1 ? binRange / (count - 1) : 0;
+
+      for (let i = 0; i < count; i++) {
+        const w     = Math.floor(Math.random() * (maxW - minW + 1)) + minW;
+        const baseH = Math.floor(Math.random() * (maxH - minH + 1)) + minH;
+
+        // Spread bins evenly across the layer's range, with a little jitter
+        const rawBin   = minBin + i * binStep + (Math.random() - 0.5) * binStep * 0.6;
+        const binIndex = Math.round(Math.max(minBin, Math.min(maxBin, rawBin)));
+
+        // Per-building dynamics
+        const lerpSpeed  = minLerp + Math.random() * (maxLerp - minLerp);
+        const reactivity = minReact + Math.random() * (maxReact - minReact);
+
+        // Generate windows grid with jitter
+        const windows = [];
+        const ww = Math.floor(Math.random() * 7) + 4;   // 4..10
+        const wh = Math.floor(Math.random() * 4) + 5;   // 5..8
+        const marginX = 5;
+        const marginY = 5;
+        const colGap = ww + 5;
+        const rowGap = wh + 6;
+
+        for (let wy = marginY; wy + wh < baseH - marginY; wy += rowGap) {
+          for (let wx = marginX; wx + ww < w - marginX; wx += colGap) {
+            const jx = Math.floor(Math.random() * 4) - 2;
+            const jy = Math.floor(Math.random() * 4) - 2;
+            windows.push({
+              wx: wx + jx,
+              wy: wy + jy,
+              ww,
+              wh,
+              flickerPhase: Math.random() * Math.PI * 2
+            });
+          }
+        }
+
+        // Antenna
+        let antH = 0;
+        let antW = 0;
+        if (hasAntennas && Math.random() < 0.4) {
+          antH = Math.floor(Math.random() * 21) + 10; // 10..30
+          antW = Math.random() < 0.5 ? 1 : 2;
+        }
+
+        buildings.push({ x, w, baseH, currentH: baseH, antH, antW, windows,
+                         binIndex, lerpSpeed, reactivity });
+        if (i < count - 1) {
+          let gap;
+          if (clusterGaps) {
+            // Organic city feel: mostly tight/touching, occasional breathing gaps
+            gap = Math.random() < 0.28
+              ? Math.floor(Math.random() * 25) + 18  // occasional gap: 18-42px
+              : Math.floor(Math.random() * 5);        // dense packing: 0-4px
+          } else {
+            gap = Math.floor(Math.random() * 19) + 2; // uniform: 2-20px
+          }
+          x += w + gap;
+        }
+      }
+
+      if (spreadFull) {
+        // Redistribute buildings to fill canvasW - 2*edgePad evenly
+        const availableW  = canvasW - 2 * edgePad;
+        const sumWidths   = buildings.reduce((s, b) => s + b.w, 0);
+        const gapBudget   = availableW - sumWidths;
+        const gapSize     = count > 1 ? Math.max(2, gapBudget / (count - 1)) : 0;
+        let xPos = edgePad;
+        for (let i = 0; i < buildings.length; i++) {
+          buildings[i].x = Math.round(xPos);
+          xPos += buildings[i].w + (i < buildings.length - 1 ? gapSize : 0);
+        }
+      } else {
+        // Centre the natural span, always keeping at least edgePad from the left edge
+        const totalSpan = x;
+        const offsetX   = Math.max(edgePad, Math.floor((canvasW - totalSpan) / 2));
+        for (const b of buildings) {
+          b.x += offsetX;
+        }
+      }
+
+      return buildings;
+    }
+
+    // ---- Scene State ----
+    const state = {
+      rear:  { buildings: [], amp: 0, gain: 1.8, color: COLOR_REAR, alpha: 0.45, glowBlur: 18 },
+      mid:   { buildings: [], amp: 0, gain: 1.4, color: COLOR_MID,  alpha: 0.65, glowBlur: 18 },
+      fg:    { buildings: [], amp: 0, gain: 1.1, color: COLOR_FG,   alpha: 0.85, glowBlur: 10 },
+      grid:  { amp: 0, flash: 0 },
+      audio: { ctx: null, analyser: null, dataArray: null, active: false },
+      loopRunning: false
+    };
+
+    // ---- Scene Init ----
+    function initScene(canvas) {
+      const W = canvas.width;
+      const H = canvas.height;
+
+      // Background: low-frequency bins, slow lerp, modest reactivity — wide & tall for depth
+      state.rear.buildings = generateBuildings(W, H, {
+        count: 12, minW: 90, maxW: 210, minH: 160, maxH: 380, hasAntennas: false,
+        minBin: 2,  maxBin: 10,  minLerp: 0.04, maxLerp: 0.12, minReact: 0.4, maxReact: 1.0,
+        spreadFull: false, edgePad: 20
+      });
+      // Mid layer: mid-frequency bins, medium speed
+      state.mid.buildings = generateBuildings(W, H, {
+        count: 10, minW: 40, maxW: 100, minH: 60, maxH: 200, hasAntennas: false,
+        minBin: 10, maxBin: 40,  minLerp: 0.07, maxLerp: 0.17, minReact: 0.6, maxReact: 1.5,
+        spreadFull: false, edgePad: 20
+      });
+      // Foreground: high-frequency bins, fastest and most dramatic — dense organic cluster
+      state.fg.buildings = generateBuildings(W, H, {
+        count: 20, minW: 8, maxW: 80, minH: 75, maxH: 180, hasAntennas: true,
+        minBin: 40, maxBin: 100, minLerp: 0.12, maxLerp: 0.25, minReact: 1.0, maxReact: 2.2,
+        spreadFull: false, edgePad: 20, clusterGaps: true
+      });
+    }
+
+    // ---- Resize ----
+    function resizeCanvas(canvas) {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+      initScene(canvas);
+    }
+
+    // ---- Audio Reading ----
+    function readAudio() {
+      if (!state.audio.active) {
+        state.grid.amp   = lerp(state.grid.amp,   0, LERP);
+        state.grid.flash = lerp(state.grid.flash, 0, 0.07);
+        state.rear.amp   = lerp(state.rear.amp,   0, LERP);
+        state.mid.amp    = lerp(state.mid.amp,    0, LERP);
+        state.fg.amp     = lerp(state.fg.amp,     0, LERP);
+        return;
+      }
+      state.audio.analyser.getByteFrequencyData(state.audio.dataArray);
+      const d = state.audio.dataArray;
+
+      const rawSubBass  = bandAverage(d, BAND_SUB_BASS[0],  BAND_SUB_BASS[1]);
+      const rawBass     = bandAverage(d, BAND_BASS[0],      BAND_BASS[1]);
+      const rawLowMids  = bandAverage(d, BAND_LOW_MIDS[0],  BAND_LOW_MIDS[1]);
+      const rawMids     = bandAverage(d, BAND_MIDS[0],      BAND_MIDS[1]);
+      const rawHighs    = bandAverage(d, BAND_HIGHS[0],     BAND_HIGHS[1]);
+
+      // Smooth baseline for grid
+      state.grid.amp = lerp(state.grid.amp, rawSubBass, LERP);
+
+      // Grid flash: instant attack on bass hit, slow decay so it hangs briefly then fades
+      const bassPulse = (rawSubBass + rawBass) * 0.5;
+      if (bassPulse > state.grid.flash) {
+        state.grid.flash = bassPulse;                        // instant attack
+      } else {
+        state.grid.flash = lerp(state.grid.flash, 0, 0.07); // slow decay
+      }
+
+      state.rear.amp = lerp(state.rear.amp, rawSubBass, LERP);
+      state.mid.amp  = lerp(state.mid.amp,  (rawBass + rawLowMids) * 0.5, LERP);
+      state.fg.amp   = lerp(state.fg.amp,   (rawMids + rawHighs)   * 0.5, LERP);
+    }
+
+    // ---- Draw Background ----
+    function drawBackground(ctx, canvas) {
+      ctx.fillStyle = BG_COLOR;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // ---- Draw Grid ----
+    function drawGrid(ctx, canvas) {
+      const horizonY = canvas.height * HORIZON_RATIO;
+      const vpX = canvas.width / 2;
+      // Use whichever is higher — smooth baseline or the transient flash
+      const a = Math.min(1, Math.max(state.grid.amp, state.grid.flash));
+
+      ctx.save();
+      ctx.strokeStyle = COLOR_MID;
+      ctx.globalAlpha = lerp(0.3, 0.95, a);
+      ctx.lineWidth   = lerp(0.5, 3.0,  a);
+      ctx.shadowBlur  = lerp(4,   22,   a);
+      ctx.shadowColor = COLOR_MID;
+
+      // 10 horizontal lines
+      const gridH = canvas.height - horizonY;
+      for (let i = 1; i <= 10; i++) {
+        const t = i / 10;
+        // Perspective spacing: lines get farther apart toward the bottom
+        const y = horizonY + gridH * (t * t);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+
+      // 12 radial spokes from vanishing point
+      const spokesCount = 12;
+      for (let i = 0; i <= spokesCount; i++) {
+        const bx = (canvas.width / spokesCount) * i;
+        ctx.beginPath();
+        ctx.moveTo(vpX, horizonY);
+        ctx.lineTo(bx, canvas.height);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // ---- Draw Layer ----
+    function drawLayer(ctx, canvas, layerState) {
+      const horizonY = canvas.height * HORIZON_RATIO;
+      const time = performance.now() / 1000;
+      const audioEnergy = layerState.amp;
+
+      ctx.save();
+
+      for (const building of layerState.buildings) {
+        const drawH = building.currentH;
+        const y = horizonY - drawH;
+
+        // Building body
+        ctx.globalAlpha = layerState.alpha;
+        ctx.shadowBlur  = layerState.glowBlur;
+        ctx.shadowColor = layerState.color;
+
+        // Dark fill
+        ctx.fillStyle = '#0d0018';
+        ctx.fillRect(building.x, y, building.w, drawH);
+
+        // Neon outline
+        ctx.strokeStyle = layerState.color;
+        ctx.lineWidth   = 1.5;
+        ctx.strokeRect(building.x, y, building.w, drawH);
+
+        // Antenna
+        if (building.antH > 0) {
+          const antX = building.x + Math.floor(building.w / 2) - Math.floor(building.antW / 2);
+          ctx.fillStyle = layerState.color;
+          ctx.fillRect(antX, y - building.antH, building.antW, building.antH);
+        }
+
+        // Windows — no shadow
+        ctx.shadowBlur = 0;
+        for (const win of building.windows) {
+          const baseOpacity = 0.6;
+          const flicker = 0.5 + 0.5 * Math.sin(win.flickerPhase + time * (1 + audioEnergy * 8));
+          const opacity = baseOpacity * flicker;
+          ctx.globalAlpha = opacity;
+          ctx.fillStyle = `rgba(255,255,180,1)`;
+          ctx.fillRect(building.x + win.wx, y + win.wy, win.ww, win.wh);
+        }
+      }
+
+      ctx.shadowBlur  = 0;
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+
+    // ---- Update Building Heights ----
+    function updateBuildingHeights(layerState, horizonY) {
+      const maxH    = horizonY * 0.95;
+      const minH    = 1;
+      const dArr    = state.audio.active ? state.audio.dataArray : null;
+
+      for (const building of layerState.buildings) {
+        // Each building reads its own specific frequency bin
+        const binVal = dArr ? dArr[building.binIndex] / 255 : 0;
+
+        // Target height driven by this building's individual reactivity
+        let target = building.baseH * (1 + binVal * building.reactivity);
+        if (target > maxH) target = maxH;
+
+        // Per-building lerp speed — some sluggish, some snappy
+        building.currentH = lerp(building.currentH, target, building.lerpSpeed);
+
+        // Subtle organic jitter so buildings never feel fully static
+        building.currentH += (Math.random() - 0.5);
+        if (building.currentH < minH) building.currentH = minH;
+        if (building.currentH > maxH) building.currentH = maxH;
+      }
+    }
+
+    // ---- Main Loop ----
+    // Guard flag state.loopRunning ensures only one rAF chain is ever started.
+    function loop(canvas, ctx) {
+      const horizonY = canvas.height * HORIZON_RATIO;
+
+      readAudio();
+      updateBuildingHeights(state.rear, horizonY);
+      updateBuildingHeights(state.mid,  horizonY);
+      updateBuildingHeights(state.fg,   horizonY);
+
+      drawBackground(ctx, canvas);
+      drawGrid(ctx, canvas);
+      drawLayer(ctx, canvas, state.rear);
+      drawLayer(ctx, canvas, state.mid);
+      drawLayer(ctx, canvas, state.fg);
+
+      requestAnimationFrame(() => loop(canvas, ctx));
+    }
+
+    // ---- Start Audio ----
+    // Note: does NOT call loop() — the loop is already running from DOMContentLoaded.
+    // Only sets state.audio.active = true so readAudio() starts processing mic data.
+    async function startAudio(canvas, ctx) {
+      const errMsg = document.getElementById('errMsg');
+      errMsg.textContent = '';
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = FFT_SIZE;
+        analyser.smoothingTimeConstant = 0.8;
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        state.audio.ctx       = audioCtx;
+        state.audio.analyser  = analyser;
+        state.audio.dataArray = new Uint8Array(analyser.frequencyBinCount);
+        state.audio.active    = true;
+
+        document.getElementById('overlay').style.display = 'none';
+        // Loop is already running — no second loop() call needed here.
+      } catch (err) {
+        errMsg.textContent = 'Microphone access denied or unavailable: ' + err.message;
+      }
+    }
+
+    // ---- Boot ----
+    document.addEventListener('DOMContentLoaded', () => {
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+
+      resizeCanvas(canvas);
+
+      window.addEventListener('resize', () => resizeCanvas(canvas));
+
+      document.getElementById('startBtn').addEventListener('click', () => startAudio(canvas, ctx));
+
+      // Start the single render loop so the static scene is visible before audio starts.
+      // startAudio() does NOT call loop() — this is the only call site.
+      if (!state.loopRunning) {
+        state.loopRunning = true;
+        loop(canvas, ctx);
+      }
+    });
+  </script>
+</body>
+</html>
